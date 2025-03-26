@@ -1,0 +1,269 @@
+Below is the final design document for the refactoring effort. This document assumes that any functionality not explicitly discussed remains unchanged from the original app. It is written with the expectation that GitHub Copilot will use these guidelines to refactor the Flask server code. All modules provided reside in the /modules directory (note the uppercase M).
+
+⸻
+
+Design Document for the Refactored Interactive LLM-Based Storytelling Server
+
+1. Overview
+
+This document details the architecture and implementation strategy for refactoring the existing Flask-based storytelling server. The goal is to improve clarity, modularity, and maintainability while preserving all current functionality that we have not specifically addressed. The server interacts with a React front end (and a pared-down Telegram interface, if needed) and uses a Neo4j graph database to store narrative and state data.
+
+Key responsibilities include:
+	•	Maintaining a persistent narrative as a sequential chain of Entries (replacing “Messages”).
+	•	Managing immutable blueprints (e.g., Scenario, BaseCharacter, BaseLocation) and their mutable, story-specific instances.
+	•	Recording state changes as History nodes (delta chains) to enable rollback (hard deletion) and branching.
+	•	Supporting gamification by treating game state as a type of trait object with its own state history.
+	•	Preserving out‑of‑character (OOC) functionality (as implemented in the original scenario and command handler modules).
+	•	Providing a shared, lower-level API for both React and Telegram endpoints.
+
+⸻
+
+2. System Architecture
+
+2.1 Components
+	•	Flask Server:
+	•	Exposes REST API endpoints for the React app.
+	•	Optionally provides simplified endpoints for Telegram.
+	•	Wraps all interactions with the Neo4j database and LLM integration behind a unified interface.
+	•	Neo4j Graph Database:
+	•	Stores all narrative data, immutable blueprints, mutable instances, and state histories.
+	•	Uses a defined schema (see Section 4) to handle sequential narrative Entries, History nodes for mutable state, and branch edges for narrative forks.
+	•	React Front End:
+	•	Provides a user interface for designing scenarios, viewing narrative chains, confirming rollbacks, and interacting with gamification elements.
+	•	Handles confirmation dialogs (e.g., for rollbacks) before sending requests to the server.
+	•	LLM Integration:
+	•	Receives prompts that are composed of narrative context (Entries and their Summaries) and current game state.
+	•	Returns narrative text along with structured update suggestions.
+	•	LLM response robustness (e.g., reject/re‑try loops) remains the responsibility of the prompt handling logic.
+
+2.2 Shared Lower-Level API
+
+Both the React endpoints and the optional Telegram endpoints call into common modules (located in /modules) that handle:
+	•	State Retrieval:
+	•	A dedicated function (e.g., retrieve_state) that assembles:
+	•	The sequential chain of narrative Entries with attached Summary nodes.
+	•	The current state of mutable instances (characters, locations) and trait objects (game state), traversing their History chains.
+	•	This function is separated from prompt composition, making it easier for subclasses to extend without rewriting shared functionality.
+	•	Database Operations:
+	•	Transactional routines for committing new Entries, updating mutable state, creating branch edges, and performing hard-deletion rollbacks.
+	•	All operations are performed in transactions to ensure consistency—if a new Entry fails to update its related mutable states, no partial changes should be saved.
+
+⸻
+
+3. Default Object Properties
+
+For consistency and to aid Copilot’s generation of stubs, the default properties for each immutable blueprint and trait object are defined as follows.
+
+3.1 Scenario (Immutable Blueprint)
+	•	Properties:
+	•	id: Unique identifier (string)
+	•	title: Scenario title (string)
+	•	Sections:
+	•	description: Long-form text describing the scenario
+	•	prompt: The initial narrative prompt (long-form text)
+
+3.2 BaseCharacter (Immutable Blueprint)
+	•	Properties:
+	•	id: Unique identifier (string)
+	•	name: Character name (string)
+	•	height: Height (string or number)
+	•	weight: Weight (string or number)
+	•	eye_color: Eye color (string)
+	•	hair_color: Hair color (string)
+	•	bust_size: Bust size (if applicable)
+	•	unique_features: Any unique physical features (string)
+	•	age: Age (number)
+	•	occupation: Occupation (string)
+	•	Sections:
+	•	background: Backstory (long-form text)
+	•	personality: Character personality description (long-form text)
+	•	secrets: Secrets (long-form text)
+	•	ambitions: Ambitions (long-form text)
+
+3.3 BaseLocation (Immutable Blueprint)
+	•	Properties:
+	•	id: Unique identifier (string)
+	•	name: Location name (string)
+	•	type: Type of location (e.g., city, forest, castle) (string)
+	•	Sections:
+	•	description: Description of the location (long-form text)
+	•	secrets: Hidden or mysterious aspects (long-form text)
+	•	events: Notable events or history (long-form text)
+
+3.4 Trait Object (For Game State)
+	•	Properties:
+	•	id: Unique identifier (string)
+	•	title: Title of the trait (string)
+	•	Sections:
+	•	description: Detailed description of the trait (long-form text)
+
+⸻
+
+4. Graph Database Schema
+
+4.1 Node Types
+	•	Immutable Nodes:
+	•	Scenario, BaseCharacter, BaseLocation
+(Properties and sections as defined above.)
+	•	Mutable Instance Nodes:
+	•	Story:
+	•	Properties: id, branch, title, scenario_id (reference to its Scenario)
+	•	CharacterInstance / LocationInstance:
+	•	Properties: id, branch, properties (a dictionary initially populated from the corresponding base)
+	•	Relationship: INHERITS_FROM → corresponding BaseCharacter or BaseLocation
+	•	Narrative Nodes:
+	•	Entry:
+	•	Properties: id, content (narrative text), seq (sequential number), timestamp
+	•	Summary:
+	•	Properties: id, text (summarized version of the Entry), core (Boolean flag)
+	•	State History Nodes:
+	•	History:
+	•	Properties: id, state (a JSON object representing a full snapshot or delta), seq, entry_id (the triggering Entry)
+	•	Relationship: PRECEDES_HISTORY to order History nodes
+	•	Branching:
+	•	Branch Edges:
+	•	Rather than a dedicated Branch node, a branch is represented by an edge (labeled, e.g., BRANCH) from an Entry to the first Entry of the new narrative path.
+	•	Optional Properties on Branch Edge:
+	•	id: Unique identifier (to assist with reference and indexing)
+	•	title: Optional title for the branch
+	•	Tag Nodes:
+	•	Tag:
+	•	Properties: id, label (string)
+
+4.2 Relationship Types
+	•	INHERITS_FROM:
+Connects an instance (CharacterInstance or LocationInstance) to its immutable base.
+	•	INSTANCE_OF:
+Connects a Story to its Scenario.
+	•	PART_OF:
+Links an Entry or Trait Object to a specific Story branch.
+	•	HAS_SUMMARY:
+Associates each Entry with its Summary.
+	•	PRECEDES:
+Orders Entries sequentially within a Story.
+	•	HAS_HISTORY:
+Attaches History nodes to mutable instances and trait objects.
+	•	PRECEDES_HISTORY:
+Orders History nodes to form a delta chain.
+	•	BRANCH (Edge):
+An edge from an Entry to the first Entry of a new branch; includes an optional title and unique ID.
+	•	TAGGED_WITH:
+Connects any node to a Tag.
+
+⸻
+
+5. Narrative Flow & State Retrieval
+
+5.1 Narrative Assembly
+	•	Adding an Entry:
+Each narrative turn (user or LLM) performs the following:
+	1.	Create a new Entry node.
+	2.	Generate an associated Summary node.
+	3.	Link the new Entry via a PRECEDES relationship to the previous Entry in the Story.
+	4.	For any mutable state changes (in CharacterInstances, LocationInstances, or Trait Objects), create new History nodes linked via HAS_HISTORY and ordered by PRECEDES_HISTORY.
+	•	State Retrieval Function (retrieve_state):
+	•	Purpose: Assemble the narrative context and current game state into a JSON object for prompt composition.
+	•	Details:
+	•	Traverse the chain of Entries to extract the Sequence of Summaries.
+	•	For each mutable instance and trait object, traverse its History chain to obtain the current state.
+	•	Modularity:
+This function is kept separate from prompt composition so that it can be inherited or overridden in subclasses (e.g., for additional gamified functionality).
+
+5.2 Rollback & Branching
+	•	Rollback (Pruning):
+	•	Triggered via an endpoint (e.g., /api/story/prune/<entryID>).
+	•	Operation:
+	•	Identify the target Entry.
+	•	Hard-delete all Entries, Summaries, and History nodes with a sequence number greater than the target.
+	•	This operation is executed within a transaction to maintain data integrity.
+	•	Confirmation:
+The React front end enforces a double-confirmation before issuing a prune command.
+	•	Branching:
+	•	Initiated via an endpoint (e.g., /api/story/branch/<entryID>/<title>).
+	•	Operation:
+	•	From the target Entry, create a BRANCH edge to the first Entry of the new branch.
+	•	The branch edge includes an optional title and a unique ID.
+	•	Subsequent Entries in the branch follow the standard sequential linking (via PRECEDES).
+
+⸻
+
+6. Gamification via Trait Objects
+	•	Unified Game State:
+	•	Game state is handled as a type of trait object attached to the Story (or specific instances).
+	•	These trait objects have default properties:
+	•	Properties: id, title
+	•	Sections: description
+	•	They maintain their own History chains, enabling the recording of state changes alongside narrative entries.
+	•	State Retrieval Integration:
+The retrieve_state function is extended to merge the current state of these trait objects with the narrative summaries before composing the LLM prompt.
+
+⸻
+
+7. API Endpoints & Interface Abstraction
+
+7.1 Shared Lower-Level API (in /Modules)
+	•	Key Functions:
+	•	retrieve_state(story_id):
+	•	Returns a JSON object with:
+	•	The sequential chain of Entries (with Summaries).
+	•	The current state for all mutable instances and trait objects.
+	•	commit_entry(entry_data, state_updates):
+	•	Commits a new Entry and its Summary.
+	•	Processes state updates by creating corresponding History nodes.
+	•	create_branch(entry_id, title):
+	•	Creates a branch edge from the specified Entry.
+	•	Returns the new branch edge’s ID (and optional title).
+	•	prune_story(entry_id):
+	•	Executes a rollback by hard-deleting all Entries, Summaries, and History nodes beyond the target Entry.
+	•	Data Serialization:
+All state data is serialized as JSON for consistency between endpoints and prompt composition.
+
+7.2 Endpoint Examples
+	•	React Endpoints:
+	•	/api/story/load/<storyID>: Retrieves the narrative (Entries with Summaries) and current game state.
+	•	/api/story/entry: Accepts new narrative Entries, processes LLM responses, and commits state updates.
+	•	/api/story/branch/<entryID>/<title>: Initiates a branch from the specified Entry.
+	•	/api/story/prune/<entryID>: Executes a rollback beyond the specified Entry.
+	•	Telegram Endpoints (Simplified):
+	•	/telegram/story/list: Lists available stories.
+	•	/telegram/story/play/<storyID>: Handles narrative turns (input and output).
+
+⸻
+
+8. Out‑of‑Character (OOC) Functionality
+	•	Preservation of OOC Features:
+	•	Existing OOC functionality, as implemented in the original Scenario and CommandHandler modules, is preserved.
+	•	These features continue to function identically for both React and Telegram interfaces in the refactored system.
+
+⸻
+
+9. Implementation Considerations
+	•	Transactional Integrity:
+All modifications (Entries, state updates, branch creations, and rollbacks) are wrapped in transactions to avoid partial updates.
+	•	Performance:
+	•	The delta chain approach is used for state updates. If performance issues arise with longer narratives, consider introducing periodic full snapshots.
+	•	Caching or indexing strategies can be revisited if needed, but these are encapsulated in the state retrieval logic.
+	•	Error Handling:
+	•	The LLM prompt composition function must handle unexpected outputs gracefully via a reject/re‑try mechanism.
+	•	Rollback operations assume confirmation from the front end before execution.
+	•	Directory Structure:
+	•	All modules are located under /modules (with an uppercase M). This includes modules like Scenario.py, CommandHandler.py, Database.py, etc.
+	•	No additional directory structure changes are anticipated for this refactor.
+
+⸻
+
+10. Conclusion
+
+This document serves as a comprehensive guide for refactoring the existing Flask server. It clearly defines:
+	•	Default object properties for immutable blueprints (with explicit separation into “properties” and “sections”).
+	•	The use of Entry nodes for narrative turns.
+	•	The approach to handling mutable state via History nodes and trait objects.
+	•	A simplified branching mechanism via branch edges with optional titles and unique IDs.
+	•	A shared, modular API for both React and Telegram endpoints.
+	•	Preservation of all original functionality (including OOC) not explicitly refactored.
+
+With these guidelines in place, GitHub Copilot (and you) can proceed confidently with the refactor. Any functionality outside these guidelines remains unchanged.
+
+⸻
+
+Please review this final design document and confirm if everything meets your expectations before we proceed.

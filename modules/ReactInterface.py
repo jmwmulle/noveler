@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from modules.Database import Database
-from modules.LLM import LLM
+from Modules.LLM import LLM
 
 react_api = Blueprint('react_api', __name__)
 
