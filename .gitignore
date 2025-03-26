@@ -1,0 +1,7 @@
+node_modules
+neo4j-community-*
+noveler-frontend.bak
+*.pyc
+**/__pycache__/
+__pychache/*
+static_files/creds.json

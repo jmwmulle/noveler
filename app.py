@@ -1,25 +1,39 @@
 import os
-import threading
-from flask import Flask
+from flask import Flask, send_from_directory
+from routes.react_api import react_api
 from modules.Database import Database
 from modules.TelegramBot import TelegramBot
 from modules.LLM import LLM
-# from modules.Scenario import Scenario   # Uncomment when your Scenario class is fully implemented
 
 # Global variable for the current active Scenario instance.
-# When a story is loaded or created, this variable will be updated.
 current_scenario = None
 
-# Initialize the Flask app (even if we're not using HTTP endpoints for now)
-app = Flask(__name__)
+# Initialize the Flask app
+app = Flask(__name__, static_folder='noveler-frontend/build', static_url_path='/')
 
+# Register the Blueprint
+app.register_blueprint(react_api)
+
+with open("static_files/creds.json", "r") as f:
+    credentials = json.load(f)
+
+hugging_face = data["hugging_face"]
+telegram = data["telegram"]
+
+dev_mode = True
 # Load configuration from environment variables or default values.
-DB_URI = os.environ.get("NEO4J_URI", "bolt://127.0.0.1:7687")
-DB_USER = os.environ.get("NEO4J_USER", "neo4j")
-DB_PASSWORD = os.environ.get("NEO4J_PASSWORD", "neo4j#9657")
+if dev_mode:
+    DB_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+    DB_PASSWORD = os.environ.get("NEO4J_PASSWORD", "neo4j#9657")
+else:
+    DB_URI = os.environ.get("NEO4J_URI", "bolt://127.0.0.1:7687")
+    DB_PASSWORD = os.environ.get("NEO4J_PASSWORD", "neo4j#9657")
 
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "m,mm,m,m")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", ".,.,.,.,")
+DB_USER = os.environ.get("NEO4J_USER", "neo4j")
+
+
+LLM_API_KEY = os.environ.get("LLM_API_KEY", credentials["hugging_face"])
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", credentials["telegram"])
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
 
@@ -32,55 +46,23 @@ llm = LLM(api_key=LLM_API_KEY, model=LLM_MODEL)
 # Instantiate the Telegram bot.
 telegram_bot = TelegramBot(TELEGRAM_TOKEN, db, llm)
 
+@app.route('/')
+def serve_react_app():
+    return send_from_directory(app.static_folder, 'index.html')
 
-def dump(self):
-    """
-    Retrieves a dump of all nodes and relationships in the database with minimal properties.
-    Returns a tuple: (dump_object, None) on success or (None, error_message) on failure.
-    """
-    # Retrieve all nodes
-    query_nodes = "MATCH (n) RETURN n"
-    result_nodes, err_nodes = self.execute_query(query_nodes)
-    if err_nodes:
-        return None, err_nodes
-    nodes = []
-    for record in result_nodes:
-        node = record["n"]
-        nodes.append({
-            "id": node.get("id"),
-            "name": node.get("name"),
-            "labels": list(node.labels)
-        })
-    # Retrieve all relationships
-    query_rels = "MATCH ()-[r]->() RETURN r"
-    result_rels, err_rels = self.execute_query(query_rels)
-    if err_rels:
-        return None, err_rels
-    relationships = []
-    for record in result_rels:
-        rel = record["r"]
-        relationships.append({
-            "type": rel.type,
-            "start": rel.start_node.get("id"),
-            "end": rel.end_node.get("id")
-        })
-    dump_obj = {
-        "nodes": nodes,
-        "relationships": relationships
-    }
-    return dump_obj, None
+@app.route('/model')
+def serve_modeling_ui():
+    return send_from_directory(app.static_folder, 'index.html')
 
-	
-# --- Overriding the Telegram bot's narrative handling ---
-# We modify the TelegramBotHandler's default behavior to use our global current_scenario.
-# In your modules/telegram_bot.py, ensure that narrative (non-command) messages are handled as follows:
+@app.route('/story')
+def serve_storytelling_ui():
+    return send_from_directory(app.static_folder, 'index.html')
 
-
-# Monkey-patch the narrative handler in TelegramBotHandler.
-# This assumes that TelegramBotHandler exposes a method or attribute that allows you to override narrative handling.
+@app.route('/<path:path>')
+def serve_static_files(path):
+    return send_from_directory(app.static_folder, path)
 
 # Start the Telegram bot polling (runs in a background thread).
-telegram_bot.stop_polling()
 telegram_bot.start_polling()
 
 # Since we don't use HTTP endpoints for now, we don't need to define any Flask routes.

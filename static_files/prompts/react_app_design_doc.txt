@@ -1,0 +1,274 @@
+Below is a consolidated, unambiguous design document that incorporates all the requirements and clarifications from our discussion. It’s written to guide GitHub Copilot (or any developer) in generating a React application that fulfills your specifications.
+
+⸻
+
+1. Overview
+
+This React app has two primary modes:
+	1.	Modeling Mode – Users create and manage structured objects (characters, traits, locations, scenarios, etc.) that feed into story generation.
+	2.	Storytelling Mode – Users instantiate and play through AI-generated stories, supporting branching, annotation-based regeneration, and user edits.
+
+The front end is intentionally thin: it sends user actions to a Flask server (via REST endpoints) and updates its local state based on server responses. Most business logic, validation, and heavy lifting occur on the server.
+
+⸻
+
+2. Tech Stack & Libraries
+	1.	React for building the UI.
+	2.	React Router (latest version you choose) for navigation between landing page, Modeling Mode, and Storytelling Mode.
+	3.	Zustand (referred to as “Zestand” in conversation) for global state management.
+	4.	Tailwind CSS for styling, with components named clearly for easy class targeting.
+	5.	Optional Form Library (e.g., React Hook Form or Formik)—pick whichever you prefer for simpler form handling.
+	6.	No Additional Tools (e.g., spinners/loaders, advanced route guards, lazy loading) are strictly required. You may include them if you wish.
+
+⸻
+
+3. Data Structures
+
+3.1 Modeling Mode Data
+
+Each object type is described by the server and fetched from:
+
+GET /user/routes/builder/object-types
+
+The client receives an array of object-type definitions, each with:
+	•	id: Numeric or string identifier (e.g., 1234567890)
+	•	name: The object type’s name (string)
+	•	properties: An array of default properties for objects of this type. Each property can include:
+	•	key (string)
+	•	type (string, e.g., "field", "role", etc.)
+	•	name (display label)
+	•	editable (boolean)
+	•	sequence (integer, for display ordering)
+	•	component (null or a custom component name if you want specialized input)
+	•	sections: An array of default sections for this type, each with:
+	•	key (section name)
+	•	name (display label)
+	•	type (e.g., "text")
+	•	component (null or a custom component name)
+	•	composition:
+	•	hierarchical: array of permissible hierarchical link target types
+	•	lateral: array of permissible lateral link target types
+	•	links: an array of object types this type can link to, specifying relationship type ("hierarchical" or "lateral")
+	•	preview: a structure describing which property/section keys to display in a read-only preview
+
+Each object of a given type has the following shape:
+	•	id: Unique ID (assigned by server)
+	•	name: String
+	•	description: String (optional)
+	•	inheritance: ID of a parent object or null
+	•	composition:
+	•	hierarchical: array of linked object IDs
+	•	lateral: array of linked object IDs
+	•	links: array of link definitions, each containing:
+	•	id (the linked object’s ID)
+	•	type ("hierarchical" or "lateral")
+	•	properties: array of key-value pairs for all properties, including any that are not in the object type’s default list
+	•	sections: array of sections, each with title, content, etc.
+	•	preview: optional data that can be used to render a quick preview
+
+Important: Objects can have extra properties/sections beyond the defaults, added via “Add Property” or “Add Section” in the UI.
+
+3.2 Story Mode Data
+
+A story object includes:
+	•	id: Unique identifier
+	•	scenario: ID referencing a scenario from Modeling Mode (or null)
+	•	title: String or null
+	•	entries: The main content array. Each entry is either:
+	•	User Entry: typed text from the user
+	•	Host Entry: AI-generated text
+	•	Each entry can contain:
+	•	id: server-assigned identifier
+	•	text: the actual content
+	•	branchPoint: boolean or null indicating if this entry spawns branches
+	•	children: array of child entries if branching is used (nested structure)
+	•	(No timestamps or advanced metadata are required in this MVP.)
+
+Annotation is ephemeral: if the user regenerates a Host Entry with annotation, it’s submitted once to the server and not stored in the final data structure. The server returns a new Host Entry, replacing the old one in the local state.
+
+⸻
+
+4. State Management with Zustand
+
+Use a single global store that can hold:
+	1.	Modeling Objects
+	•	A dictionary keyed by object type, each containing an array (or map) of objects.
+	•	Example: state.modeling[objectType] = [list of objects]
+	2.	Story Data
+	•	Possibly a dictionary keyed by story ID, each containing the loaded story object.
+	•	Example: state.stories[storyId] = { id, scenario, title, entries }
+	3.	UI/Modal State
+	•	Flags for showing/hiding modals (delete, linking, annotation, error).
+	•	Currently selected object/story.
+	•	Error messages or success messages from server responses.
+
+Optimistic vs Non-Optimistic Updates
+	•	Modeling Mode:
+	•	Non-optimistic by default. After the user clicks “Submit” (create/update), the app calls the server. If status === "success", the updated object data is merged into the global store. If status === "failure", revert local changes.
+	•	Storytelling Mode:
+	•	User entries (typed text) are optimistic: appear immediately. If the server fails, remove them.
+	•	Branch creation and annotation/regeneration are non-optimistic: no changes until server confirms success.
+
+⸻
+
+5. UI & Component Hierarchy
+
+5.1 Landing Page
+
+Route: /
+Purpose: Let the user select Modeling Mode or Storytelling Mode.
+Components:
+	•	BigUIButton (shared) – Two buttons: “Build” and “Play.”
+	•	On click, navigate to /build or /play via React Router.
+
+5.2 Modeling Mode
+
+Route: /build
+
+Top-Level Layout (split into sections or components as you prefer):
+	1.	Menu Section
+	•	Displays a list of object types (fetched from /user/routes/builder/object-types).
+	•	Clicking an object type fetches the list of existing objects from /list/<object_type> and shows them in the List Section.
+	2.	List Section
+	•	Displays existing objects for the selected type.
+	•	Hierarchical sorting/indentation if they have parents.
+	•	Expand/collapse purely UI-based.
+	•	Clicking an object highlights it and populates the Editor Pane.
+	3.	Editor Pane
+	•	Shows a form with all base fields (name, description, inheritance, plus any dynamic properties/sections).
+	•	Add Property and Add Section buttons for extra fields.
+	•	Submit triggers either /create/<object_type> (if new) or /update/<object_type>/<id> (if editing).
+	•	On success, update the global store with the server’s returned object data.
+	4.	Actions Pane
+	•	Visible when an object is selected.
+	•	Buttons:
+	•	Update – Loads the selected object into the Editor Pane.
+	•	Inherit – Loads the selected object into the Editor Pane but clears its id and sets inheritance to the parent’s ID.
+	•	Clone – Same as inherit but also clears inheritance.
+	•	Delete – Opens the Delete Modal.
+	5.	Links Section
+	•	Visible if the selected object has any links.
+	•	Displays each link with a small “X” to remove it from local state.
+	•	Full changes are only sent to server on “Submit” in the Editor Pane.
+
+5.3 Storytelling Mode
+
+Route: /play
+
+Top-Level Layout:
+	1.	Header
+	•	Displays basic story info (title, location, characters, etc.).
+	•	A branch selector dropdown if multiple branches exist.
+	2.	Narrative Pane
+	•	Chronological list of entries. Each entry is either User Entry or Host Entry.
+	•	For branching, entries can have nested children arrays. Toggling branches is a local UI state change.
+	3.	User Input Component
+	•	Text field + submit (CMD/CTRL+Enter).
+	•	Optimistic updates: new user entry appears immediately in the local state, then the server is called. If it fails, remove the entry.
+	4.	Actions Menu (per entry)
+	•	User Entry: Edit (in-place), Copy to Input, Copy to Clipboard, Prune (delete downstream), Branch (non-optimistic).
+	•	Host Entry: Regenerate (with or without annotation).
+	5.	Annotation Modal (for Host Entry)
+	•	If the user chooses “Regenerate with Annotation,” they highlight text or type notes.
+	•	The server is called with /regenerate/<story-id>/<entry-id> + annotation data.
+	•	If success, replace the old entry. If failure, revert.
+
+⸻
+
+6. Modals
+
+6.1 Linking Modal
+	•	Triggered by a “Relationships” or “Link” button in the Editor Pane.
+	•	Shows a list or multiple tabs for hierarchical vs. lateral object types, depending on what’s allowed.
+	•	If an object type can support both, a dropdown or toggle appears to choose link type.
+	•	On confirm, the link is added to local state.
+	•	Final changes to the object’s links or composition are submitted on form save in the Editor Pane.
+
+6.2 Delete Modal
+	•	Triggered by “Delete” in the Actions Pane (Modeling Mode) or “Prune” in Storytelling.
+	•	Options:
+	•	Bubble – Reassign child objects or not (depends on server logic).
+	•	Delete Children – If there are child objects or nested entries.
+	•	Confirm calls DELETE /delete/<object_type>/<id> or /prune/<story-id>/<entry-id>.
+	•	On success, remove from local store. On failure, do nothing.
+
+6.3 Annotation Modal
+	•	Specific to Storytelling Mode’s Host Entries.
+	•	Temporarily holds highlight info or textual notes to guide the next regeneration.
+	•	On confirm, calls /regenerate/<story-id>/<entry-id> with annotation data.
+	•	Not stored in final data; ephemeral.
+
+6.4 Error/Server Response Modal
+	•	A generic component for showing errors or success messages.
+	•	If status === "failure", display the message. Provide a “Close” button to dismiss.
+	•	If status === "success" with a message, you can show a simple success confirmation.
+
+⸻
+
+7. Routing
+
+Use React Router with at least three routes:
+	•	/ – Landing Page
+	•	/build – Modeling Mode
+	•	/play – Storytelling Mode
+
+No advanced guards or lazy loading are strictly required. You may add them if you see fit.
+
+⸻
+
+8. API Integration
+
+8.1 Response Format
+
+All server responses are JSON objects with:
+
+{
+  "status": "success" | "failure",
+  "message": "Some message",
+  "data": { ... } | null
+}
+
+	•	Always check status.
+	•	If status === "success" and data is present, merge it into your global state.
+	•	If status === "failure", do not modify state; display the error message.
+
+8.2 Modeling Mode Endpoints
+	•	List Objects: GET /list/<object_type>
+	•	Create: POST /create/<object_type>
+	•	Update: PUT /update/<object_type>/<id>
+	•	Delete: DELETE /delete/<object_type>/<id>
+
+When linking/unlinking, you’ll update the object’s composition or links in the same PUT /update/<object_type>/<id> request.
+
+8.3 Storytelling Mode Endpoints
+	•	Load Story: GET /load/<story-id>
+	•	Instantiate: POST /instantiate/<scenario-id>
+	•	Edit User Entry: PATCH /edit/<story-id>/<entry-id>
+	•	Prune: DELETE /prune/<story-id>/<entry-id>
+	•	Branch: POST /branch/<story-id>/<entry-id>
+	•	Regenerate: POST /regenerate/<story-id>/<entry-id>
+
+⸻
+
+9. Additional Implementation Notes
+	1.	Validation: Minimal. Only ensure required fields (like name) are present before submitting.
+	2.	No Timestamps: Story entries don’t need created/updated times in this MVP.
+	3.	Annotation: Ephemeral. Only sent once for Host Entry regeneration.
+	4.	Optimistic vs. Non-Optimistic:
+	•	Modeling Mode: Non-optimistic for create/update/delete.
+	•	Story Mode: User entries are optimistic, branching/annotation is non-optimistic.
+	5.	Granular Components:
+	•	Create as many small components as needed for clarity: each modal, each pane, each button set, etc. This helps with Tailwind styling.
+	6.	No Searching or Filtering: The lists simply show all objects or entries.
+	7.	Preview Key: If an object type includes a preview key, your UI can use it to show a read-only summary (like a short excerpt of properties/sections).
+
+⸻
+
+10. Final Status
+
+This document is complete and should provide Copilot (or any developer) with enough detail to generate a working React application. The server remains the single source of truth, and the React client focuses on:
+	•	Maintaining local state in sync with server responses.
+	•	Providing straightforward modals for linking, deleting, annotation, and error handling.
+	•	Handling minimal validations (required fields) and basic UI flows.
+
+With this design, you can adapt or extend as your LLM-driven backend evolves, confident that the core React structure is well-defined.
